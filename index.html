@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Coffee</title>
+    <meta charset="utf-8">
+    <style>
+        body {
+            margin: 0;
+        }
+
+        #map-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background: #e8e8e8;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            pointer-events: none;
+            font-family: -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        .tooltip a {
+            color: #0066cc;
+            text-decoration: none;
+            pointer-events: auto;
+        }
+
+        .tooltip a:hover {
+            text-decoration: underline;
+        }
+
+        .coffee-shop {
+            fill: #ff4b4b;
+            opacity: 0.8;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            filter: url(#glow);
+        }
+
+        .coffee-shop:hover {
+            opacity: 1;
+            stroke: #000000;
+            stroke-width: 0.5px;
+        }
+
+        .coffee-shop.active {
+            fill: #ff0000;
+            opacity: 0.8;
+            stroke: #000000;
+            stroke-width: 0.5px;
+        }
+
+        .neighborhood {
+            fill: white;
+            stroke: #666;
+            stroke-width: 0.5;
+            filter: url(#watercolor);
+        }
+
+        .zoom-controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        .zoom-controls button {
+            padding: 8px 12px;
+            font-size: 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+        }
+
+        .zoom-controls button:hover {
+            background: #f0f0f0;
+        }
+
+        .shop-label {
+            font-size: 9px;
+            font-family: -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+            pointer-events: none;
+            fill: #333;
+        }
+
+        .label-line {
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map-container">
+        <div class="zoom-controls">
+            <button id="zoom-in">+</button>
+            <button id="zoom-out">−</button>
+            <button id="reset">Reset</button>
+        </div>
+    </div>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/d3-geo.v3.min.js"></script>
+    <script>
+        // Set the dimensions of the map
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        // Create the SVG container
+        const svg = d3.select("#map-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        // Create a group for all map elements
+        const g = svg.append("g");
+
+        // Create a tooltip div
+        const tooltip = d3.select("#map-container")
+            .append("div")
+            .attr("class", "tooltip")
+            .style("opacity", 0);
+
+        // Define the projection for Seattle area
+        const projection = d3.geoMercator()
+            .center([-122.3351, 47.6462]) // Seattle coordinates
+            .scale(350000)
+            .translate([width / 2, height / 2]);
+
+        // Create zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.4, 4])
+            .on("zoom", zoomed);
+
+        // Apply zoom behavior to SVG
+        svg.call(zoom);
+
+        // Function to create and run force simulation
+        function runSimulation(labelData, scale = 1) {
+            const simulation = d3.forceSimulation(labelData)
+                .force("x", d3.forceX(d => d.anchor.x + 4 * scale).strength(0.5))
+                .force("y", d3.forceY(d => d.anchor.y + 2 * scale).strength(0.5))
+                .force("collision", d3.forceCollide().radius(15 * scale))
+                .stop();
+
+            // Run the simulation
+            for (let i = 0; i < 10; ++i) simulation.tick();
+
+            return labelData;
+        }
+
+        // Function to check if two bounding boxes overlap
+        function checkOverlap(box1, box2, padding = 2) {
+            return !(
+                box1.x2 + padding < box2.x1 ||
+                box1.x1 - padding > box2.x2 ||
+                box1.y2 + padding < box2.y1 ||
+                box1.y1 - padding > box2.y2
+            );
+        }
+
+        // Function to get visible labels based on overlap
+        function getVisibleLabels(labels, scale) {
+            const fontSize = 6 * scale;
+            const visibleLabels = new Set();
+            const boxes = [];
+
+            // Sort labels by rating (if available) or alphabetically
+            labels.sort((a, b) => {
+                if (a.rating !== b.rating) return (b.rating || 0) - (a.rating || 0);
+                return a.name.localeCompare(b.name);
+            });
+
+            labels.forEach(label => {
+                const box = {
+                    x1: label.x,
+                    y1: label.y - fontSize,
+                    x2: label.x + label.name.length * fontSize * 0.6,  // Approximate text width
+                    y2: label.y + fontSize * 0.3
+                };
+
+                let overlaps = false;
+                for (const existingBox of boxes) {
+                    if (checkOverlap(box, existingBox)) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+
+                if (!overlaps) {
+                    boxes.push(box);
+                    visibleLabels.add(label);
+                }
+            });
+
+            return visibleLabels;
+        }
+
+        function zoomed(event) {
+            g.attr("transform", event.transform);
+
+            // Scale the dots inversely to maintain size
+            const scale = 1 / event.transform.k;
+
+            // Update dots
+            g.selectAll(".coffee-shop")
+                .attr("r", 4 * scale)
+                .style("stroke-width", 2 * scale);
+
+            // Scale text with zoom (removed inverse scaling)
+            const textScale = event.transform.k;
+
+            // Rerun simulation with current scale
+            const labels = g.selectAll(".shop-label").data();
+            runSimulation(labels, scale);
+
+            // Get visible labels
+            const visibleLabels = getVisibleLabels(labels, scale);
+
+            // Update label visibility and positions, now scaling UP with zoom
+            // Log the current scale for debugging
+            g.selectAll(".shop-label")
+                .style("font-size", `${(9 * scale/1.25) + 9/4}px`)
+                .style("display", d => visibleLabels.has(d) ? null : "none")
+                .attr("x", d => d.x)
+                .attr("y", d => d.y);
+
+            // Update line visibility and positions
+            g.selectAll(".label-line")
+                .style("display", d => visibleLabels.has(d) ? null : "none")
+                .attr("x2", d => d.x)
+                .attr("y2", d => d.y)
+                .style("stroke-width", `${0.5 * scale}px`);
+
+            // Calculate and print the current bounding box
+            const bounds = calculateBoundingBox(event.transform);
+        }
+
+        // Function to calculate bounding box coordinates
+        function calculateBoundingBox(transform) {
+            const topLeft = projection.invert([0, 0].map(d => (d - transform.x) / transform.k));
+            const bottomRight = projection.invert([width, height].map(d => (d - transform.x) / transform.k));
+            return {
+                west: topLeft[0],
+                north: topLeft[1],
+                east: bottomRight[0],
+                south: bottomRight[1]
+            };
+        }
+
+        // Print initial bounding box on load
+        const initialBounds = calculateBoundingBox({ k: 1, x: 0, y: 0 });
+        console.log('Initial Bounding Box:', initialBounds);
+
+        // First load and display Seattle neighborhoods
+        fetch('https://raw.githubusercontent.com/seattleio/seattle-boundaries-data/master/data/neighborhoods.geojson')
+            .then(response => response.json())
+            .then(data => {
+                const path = d3.geoPath().projection(projection);
+
+                g.append("g")
+                    .attr("class", "neighborhoods")
+                    .selectAll("path")
+                    .data(data.features)
+                    .enter()
+                    .append("path")
+                    .attr("class", "neighborhood")
+                    .attr("d", path);
+
+                // After neighborhoods are loaded, load the coffee shop data
+                return d3.json("assets/results.json");
+            })
+            .then(function (data) {
+                const shops = g.append("g")
+                    .attr("class", "coffee-shops");
+
+                // Create label data with initial positions
+                const labelData = data.map(d => ({
+                    x: projection([d.location.longitude, d.location.latitude])[0] + 6,
+                    y: projection([d.location.longitude, d.location.latitude])[1] + 2,
+                    name: d.displayName.text,
+                    rating: d.rating,
+                    anchor: {
+                        x: projection([d.location.longitude, d.location.latitude])[0],
+                        y: projection([d.location.longitude, d.location.latitude])[1]
+                    }
+                }));
+
+                // Run initial simulation
+                runSimulation(labelData);
+
+                // Add circles for each coffee shop
+                shops.selectAll("circle")
+                    .data(data)
+                    .enter()
+                    .append("circle")
+                    .attr("class", "coffee-shop")
+                    .attr("cx", d => projection([d.location.longitude, d.location.latitude])[0])
+                    .attr("cy", d => projection([d.location.longitude, d.location.latitude])[1])
+                    .attr("r", 4)
+                    .on("click", function (event, d) {
+                        // Remove active class from all circles
+                        g.selectAll(".coffee-shop").classed("active", false);
+
+                        // Add active class to clicked circle
+                        const circle = d3.select(this);
+                        circle.classed("active", true);
+
+                        const rating = d.rating ? `${d.rating}/5` : 'N/A';
+                        const phone = d.nationalPhoneNumber || 'N/A';
+                        const cleanWebsite = d.websiteUri ? d.websiteUri.replace(/^(https?:\/\/)?(www\.)?/i, '').replace(/\/+$/, '') : '';
+                        const website = d.websiteUri ? `<a href="${d.websiteUri}" target="_blank" rel="noopener">${cleanWebsite}</a>` : '';
+
+                        tooltip
+                            .html(`
+                                <strong>${d.displayName.text}</strong> (${rating})<br/>
+                                ${d.formattedAddress}<br/>
+                                ${website}
+                            `)
+                            .style("left", (event.pageX + 10) + "px")
+                            .style("top", (event.pageY - 10) + "px")
+                            .style("pointer-events", "auto")
+                            .transition()
+                            .duration(50)
+                            .style("opacity", .9);
+
+                        // Stop event propagation to prevent map click from closing tooltip
+                        event.stopPropagation();
+                    });
+
+                // Add text labels using the simulated positions
+                shops.selectAll("text")
+                    .data(labelData)
+                    .enter()
+                    .append("text")
+                    .attr("class", "shop-label")
+                    .attr("x", d => d.x)
+                    .attr("y", d => d.y)
+                    .text(d => d.name);
+
+                // Add lines connecting labels to points
+                shops.selectAll("line")
+                    .data(labelData)
+                    .enter()
+                    .append("line")
+                    .attr("class", "label-line")
+                    .attr("x1", d => d.anchor.x)
+                    .attr("y1", d => d.anchor.y)
+                    .attr("x2", d => d.x)
+                    .attr("y2", d => d.y)
+                    .style("stroke", "#666")
+                    .style("stroke-width", "0.5px")
+                    .style("opacity", 0.5);
+            })
+            .catch(error => console.log("Error loading data:", error));
+
+        // Click anywhere else to close tooltip
+        svg.on("click", function () {
+            tooltip.transition()
+                .duration(50)
+                .style("opacity", 0)
+                .end()
+                .then(() => {
+                    tooltip.style("pointer-events", "none")
+                        .html("");
+                });
+            g.selectAll(".coffee-shop").classed("active", false);
+        });
+
+        // Zoom control buttons
+        d3.select("#zoom-in").on("click", () => {
+            svg.transition().duration(300).call(zoom.scaleBy, 2);
+        });
+
+        d3.select("#zoom-out").on("click", () => {
+            svg.transition().duration(300).call(zoom.scaleBy, 0.5);
+        });
+
+        d3.select("#reset").on("click", () => {
+            svg.transition().duration(750).call(
+                zoom.transform,
+                d3.zoomIdentity
+            );
+        });
+    </script>
+</body>
+
+</html>

@@ -280,7 +280,7 @@
                     .attr("d", path);
 
                 // After neighborhoods are loaded, load the coffee shop data
-                return d3.json("assets/results.json");
+                return d3.json("assets/coffee.json");
             })
             .then(function (data) {
                 const shops = g.append("g")

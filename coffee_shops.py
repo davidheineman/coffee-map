@@ -122,7 +122,7 @@ def get_all_locations():
         rating = place.get('rating', 'N/A')
         print(f"{i}. {name} ({address})")
 
-    output_file = 'assets/results.json'
+    output_file = 'assets/coffee.json'
     with open(output_file, 'w') as f:
         json.dump(all_unique_places, f, indent=2)
     print(f"\nResults saved to {output_file}")
